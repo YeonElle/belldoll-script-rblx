@@ -1,5 +1,5 @@
 --[[
-    Pastel Silent Aim - silent aim + smooth camlock + hitbox expander + visuals GUI
+    Pastel Lock - smooth camlock (closest player) + hitbox expander + visuals GUI
     Theme: white + pastel blue (fully recolorable in Settings, 2-color system)
     Needs an executor with: hookmetamethod, getnamecallmethod, newcclosure, checkcaller, Drawing
     Menu key: RightShift (or tap the round button on mobile)
@@ -25,7 +25,7 @@ newcclosure = newcclosure or function(f) return f end
 checkcaller = checkcaller or function() return false end
 
 --// State / Config
-local State = {Unloaded = false, Target = nil, AimPart = nil, AimPos = nil, KeyDown = false, Ping = 0.1, RandName = "Head"}
+local State = {Unloaded = false, Ping = 0.1, RandName = "Head"}
 local CamState = {Active = false, Target = nil}
 local HB = {}
 local restoreHB
@@ -33,20 +33,10 @@ local Conns = {}
 local function connect(sig, fn) local c = sig:Connect(fn); table.insert(Conns, c); return c end
 
 local Cfg = {
-    Aim = {
-        Enabled = false, KeyMode = "Always", Key = nil,
-        FOV = 150, ShowFOV = true, FOVFilled = false, FOVColor = Color3.fromRGB(168, 208, 255),
-        Part = "Head", Priority = "Closest to Cursor", Sticky = false,
-        MaxDistance = 1500, HitChance = 100,
-        TeamCheck = true, VisCheck = false, AliveCheck = true, FFCheck = true,
-        Prediction = true, PredMode = "Auto (Ping)", PredAmount = 0.135, PingMult = 1.0, YScale = 0.5, RandomOffset = 0,
-        HookRaycast = true, HookFindPart = true, HookMouse = true, HookScreenRay = true,
-        ShowLine = true, ShowDot = true,
-    },
     Cam = {
         Enabled = false, KeyMode = "Toggle", Key = nil,
-        Part = "Head", Priority = "Closest to Cursor", Sticky = true,
-        FOV = 200, ShowFOV = true, FOVColor = Color3.fromRGB(255, 184, 210), ShowDot = true,
+        Part = "Head", Priority = "Closest Distance", Sticky = true, AnyAngle = true,
+        DotColor = Color3.fromRGB(255, 184, 210), ShowDot = true,
         MaxDistance = 1500, Smoothness = 85,
         TeamCheck = true, VisCheck = false, AliveCheck = true, FFCheck = true,
         Prediction = false, PredMode = "Manual", PredAmount = 0.12, PingMult = 1.0, YScale = 0.5, RandomOffset = 0,
@@ -117,16 +107,9 @@ local function isVisible(part, char)
     return res == nil or res.Instance:IsDescendantOf(char)
 end
 
-local function aimActive()
-    local A = Cfg.Aim
-    if not A.Enabled then return false end
-    if A.KeyMode == "Always" or not A.Key then return true end
-    return State.KeyDown
-end
-
 local function validPlayer(plr, S)
     if plr == LP then return end
-    local A = S or Cfg.Aim
+    local A = S or Cfg.Cam
     local char = plr.Character
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -139,7 +122,7 @@ local function validPlayer(plr, S)
 end
 
 local function getPart(char, mousePos, S)
-    local m = (S or Cfg.Aim).Part
+    local m = (S or Cfg.Cam).Part
     if m == "Head" then return char:FindFirstChild("Head")
     elseif m == "Torso" then return char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or char:FindFirstChild("HumanoidRootPart")
     elseif m == "HumanoidRootPart" then return char:FindFirstChild("HumanoidRootPart")
@@ -160,7 +143,7 @@ local function getPart(char, mousePos, S)
 end
 
 local function evaluate(plr, mousePos, ignoreFOV, S)
-    local A = S or Cfg.Aim
+    local A = S or Cfg.Cam
     local char, hum, hrp = validPlayer(plr, A)
     if not char then return end
     local dist = (hrp.Position - Camera.CFrame.Position).Magnitude
@@ -168,7 +151,7 @@ local function evaluate(plr, mousePos, ignoreFOV, S)
     local part = getPart(char, mousePos, A)
     if not part then return end
     local sp, on = Camera:WorldToViewportPoint(part.Position)
-    if not on then return end
+    if not on and not A.AnyAngle then return end
     local d2 = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
     if not ignoreFOV and d2 > A.FOV then return end
     if A.VisCheck and not isVisible(part, char) then return end
@@ -179,13 +162,13 @@ local function evaluate(plr, mousePos, ignoreFOV, S)
 end
 
 local function predictionAmount(S)
-    local A = S or Cfg.Aim
+    local A = S or Cfg.Cam
     if A.PredMode == "Manual" then return A.PredAmount end
     return State.Ping * A.PingMult
 end
 
 local function computeAimPos(part, hrp, S)
-    local A = S or Cfg.Aim
+    local A = S or Cfg.Cam
     local pos = part.Position
     if A.Prediction then
         local v = hrp.AssemblyLinearVelocity
@@ -198,117 +181,11 @@ local function computeAimPos(part, hrp, S)
     return pos
 end
 
-local function shouldRedirect()
-    return State.AimPos ~= nil and (Cfg.Aim.HitChance >= 100 or math.random(1, 100) <= Cfg.Aim.HitChance)
-end
-
---// Hooks
-local hooked = false
-if hookmetamethod and getnamecallmethod then
-    hooked = pcall(function()
-        local oldNC
-        oldNC = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            if State.Unloaded or not State.AimPos or checkcaller() then return oldNC(self, ...) end
-            local method = getnamecallmethod()
-            local A = Cfg.Aim
-            if self == workspace then
-                if method == "Raycast" and A.HookRaycast then
-                    local args = {...}
-                    local n = select("#", ...)
-                    if typeof(args[1]) == "Vector3" and typeof(args[2]) == "Vector3" and shouldRedirect() then
-                        args[2] = (State.AimPos - args[1]).Unit * args[2].Magnitude
-                        return oldNC(self, table.unpack(args, 1, n))
-                    end
-                elseif (method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList" or method == "FindPartOnRayWithWhitelist") and A.HookFindPart then
-                    local args = {...}
-                    local n = select("#", ...)
-                    if typeof(args[1]) == "Ray" and shouldRedirect() then
-                        local r = args[1]
-                        args[1] = Ray.new(r.Origin, (State.AimPos - r.Origin).Unit * r.Direction.Magnitude)
-                        return oldNC(self, table.unpack(args, 1, n))
-                    end
-                end
-            elseif self == Camera and A.HookScreenRay and (method == "ScreenPointToRay" or method == "ViewportPointToRay") then
-                if shouldRedirect() then
-                    local o = Camera.CFrame.Position
-                    return Ray.new(o, (State.AimPos - o).Unit)
-                end
-            end
-            return oldNC(self, ...)
-        end))
-
-        local oldIdx
-        oldIdx = hookmetamethod(game, "__index", newcclosure(function(self, key)
-            if self == Mouse and not State.Unloaded and State.AimPos and Cfg.Aim.HookMouse and not checkcaller() then
-                if key == "Hit" and shouldRedirect() then return CFrame.new(State.AimPos)
-                elseif key == "Target" and shouldRedirect() then return State.AimPart end
-            end
-            return oldIdx(self, key)
-        end))
-    end)
-end
-
 --// Drawing objects
 local hasDrawing = pcall(function() Drawing.new("Line"):Remove() end)
-local FOVCircle, TargetLine, TargetDot, CamCircle, CamDot
+local CamDot
 if hasDrawing then
-    FOVCircle = Drawing.new("Circle"); FOVCircle.NumSides = 64; FOVCircle.Thickness = 1.5; FOVCircle.Transparency = 1
-    TargetLine = Drawing.new("Line"); TargetLine.Thickness = 1.5; TargetLine.Transparency = 1
-    TargetDot = Drawing.new("Circle"); TargetDot.Radius = 4; TargetDot.Filled = true; TargetDot.NumSides = 16; TargetDot.Transparency = 1
-    CamCircle = Drawing.new("Circle"); CamCircle.NumSides = 64; CamCircle.Thickness = 1.5; CamCircle.Transparency = 1
     CamDot = Drawing.new("Circle"); CamDot.Radius = 4; CamDot.Filled = true; CamDot.NumSides = 16; CamDot.Transparency = 1
-end
-
-local function updateTarget()
-    Camera = workspace.CurrentCamera
-    local A = Cfg.Aim
-    local mousePos = UIS:GetMouseLocation()
-
-    if hasDrawing then
-        FOVCircle.Visible = A.Enabled and A.ShowFOV
-        FOVCircle.Position = mousePos
-        FOVCircle.Radius = A.FOV
-        FOVCircle.Color = A.FOVColor
-        FOVCircle.Filled = A.FOVFilled
-        FOVCircle.Transparency = A.FOVFilled and 0.9 or 1
-        if A.FOVFilled then FOVCircle.Transparency = 0.15 end
-    end
-
-    if not aimActive() then
-        State.Target, State.AimPart, State.AimPos = nil, nil, nil
-        if hasDrawing then TargetLine.Visible = false; TargetDot.Visible = false end
-        return
-    end
-
-    local part, hrp
-    if A.Sticky and State.Target then
-        part, hrp = evaluate(State.Target, mousePos, true)
-        if not part then State.Target = nil end
-    end
-    if not part then
-        local bestScore
-        for _, plr in ipairs(Players:GetPlayers()) do
-            local p, h, score = evaluate(plr, mousePos, false)
-            if p and (not bestScore or score < bestScore) then
-                bestScore, part, hrp, State.Target = score, p, h, plr
-            end
-        end
-        if not part then State.Target = nil end
-    end
-
-    if part then
-        State.AimPart = part
-        State.AimPos = computeAimPos(part, hrp)
-        if hasDrawing then
-            local sp = Camera:WorldToViewportPoint(State.AimPos)
-            local sv = Vector2.new(sp.X, sp.Y)
-            TargetLine.Visible = A.ShowLine; TargetLine.From = mousePos; TargetLine.To = sv; TargetLine.Color = A.FOVColor
-            TargetDot.Visible = A.ShowDot; TargetDot.Position = sv; TargetDot.Color = A.FOVColor
-        end
-    else
-        State.AimPart, State.AimPos = nil, nil
-        if hasDrawing then TargetLine.Visible = false; TargetDot.Visible = false end
-    end
 end
 
 -- =====================================================================
@@ -373,7 +250,7 @@ local function updateESP(plr, o)
 
     local color = E.Color
     if E.TeamColors then color = plr.TeamColor.Color end
-    if E.HighlightTarget and plr == State.Target then color = E.TargetColor end
+    if E.HighlightTarget and plr == CamState.Target then color = E.TargetColor end
 
     -- chams
     if E.Chams then
@@ -471,7 +348,6 @@ connect(Players.PlayerRemoving, function(plr)
     if ESPObjs[plr] then destroyESP(ESPObjs[plr]); ESPObjs[plr] = nil end
     if CamState.Target == plr then CamState.Target = nil end
     restoreHB(plr)
-    if State.Target == plr then State.Target = nil end
 end)
 
 -- =====================================================================
@@ -482,11 +358,7 @@ local function camStep(dt)
     local C = Cfg.Cam
     Camera = workspace.CurrentCamera
     local mousePos = UIS:GetMouseLocation()
-    if hasDrawing then
-        CamCircle.Visible = C.Enabled and C.ShowFOV
-        CamCircle.Position = mousePos; CamCircle.Radius = C.FOV; CamCircle.Color = C.FOVColor
-        CamDot.Visible = false
-    end
+    if hasDrawing then CamDot.Visible = false end
     if not (C.Enabled and CamState.Active) then CamState.Target = nil return end
 
     local part, hrp
@@ -498,7 +370,7 @@ local function camStep(dt)
         local bestScore
         CamState.Target = nil
         for _, plr in ipairs(Players:GetPlayers()) do
-            local p, h, score = evaluate(plr, mousePos, false, C)
+            local p, h, score = evaluate(plr, mousePos, true, C)
             if p and (not bestScore or score < bestScore) then
                 bestScore, part, hrp, CamState.Target = score, p, h, plr
             end
@@ -517,7 +389,7 @@ local function camStep(dt)
 
     if hasDrawing and C.ShowDot then
         local sp = Camera:WorldToViewportPoint(pos)
-        CamDot.Visible = true; CamDot.Position = Vector2.new(sp.X, sp.Y); CamDot.Color = C.FOVColor
+        CamDot.Visible = true; CamDot.Position = Vector2.new(sp.X, sp.Y); CamDot.Color = C.DotColor
     end
 end
 RunService:BindToRenderStep("PSA_Camlock", Enum.RenderPriority.Camera.Value + 1, camStep)
@@ -674,7 +546,7 @@ corner(Top, 12)
 local TopFix = new("Frame", {Size = UDim2.new(1, 0, 0, 12), Position = UDim2.new(0, 0, 1, -12), BorderSizePixel = 0, Parent = Top})
 local Dot = new("Frame", {Size = UDim2.fromOffset(10, 10), Position = UDim2.new(0, 14, 0.5, -5), BorderSizePixel = 0, Parent = Top})
 corner(Dot, 5)
-Lbl(Top, "Pastel Silent  |  universal", {Position = UDim2.new(0, 32, 0, 0), Size = UDim2.new(1, -90, 1, 0), Font = Enum.Font.GothamBold, TextSize = 14})
+Lbl(Top, "Pastel Lock  |  universal", {Position = UDim2.new(0, 32, 0, 0), Size = UDim2.new(1, -90, 1, 0), Font = Enum.Font.GothamBold, TextSize = 14})
 local CloseBtn = new("TextButton", {Text = "-", Font = Enum.Font.GothamBold, TextSize = 18, Size = UDim2.fromOffset(28, 24), Position = UDim2.new(1, -38, 0.5, -12), BorderSizePixel = 0, AutoButtonColor = false, Parent = Top})
 corner(CloseBtn, 6)
 Theme:Bind(function(t)
@@ -940,54 +812,11 @@ end
 -- =====================================================================
 --  MENUS
 -- =====================================================================
-local Aim = CreateTab("Silent Aim")
 local CamTab = CreateTab("Camlock")
 local HBTab = CreateTab("Hitbox")
 local Vis = CreateTab("Visuals")
 local Set = CreateTab("Settings")
-local A, E, W, C, H = Cfg.Aim, Cfg.ESP, Cfg.World, Cfg.Cam, Cfg.Hitbox
-
---// Silent Aim
-Aim:Section("Main")
-Aim:Toggle("Enable Silent Aim", A.Enabled, function(v) A.Enabled = v end)
-Aim:Dropdown("Key Mode", {"Always", "Hold", "Toggle"}, A.KeyMode, function(v) A.KeyMode = v; State.KeyDown = false end)
-Aim:Keybind("Aim Key", A.Key, function(k) A.Key = k; State.KeyDown = false end)
-
-Aim:Section("Targeting")
-Aim:Dropdown("Aim Part", {"Head", "Torso", "HumanoidRootPart", "Closest Part", "Random"}, A.Part, function(v) A.Part = v end)
-Aim:Dropdown("Target Priority", {"Closest to Cursor", "Closest Distance", "Lowest Health"}, A.Priority, function(v) A.Priority = v end)
-Aim:Toggle("Sticky Target", A.Sticky, function(v) A.Sticky = v end)
-Aim:Slider("FOV Radius", 10, 800, A.FOV, 0, "px", function(v) A.FOV = v end)
-Aim:Slider("Max Distance", 50, 5000, A.MaxDistance, 0, " studs", function(v) A.MaxDistance = v end)
-Aim:Slider("Hit Chance", 1, 100, A.HitChance, 0, "%", function(v) A.HitChance = v end)
-
-Aim:Section("Checks")
-Aim:Toggle("Team Check", A.TeamCheck, function(v) A.TeamCheck = v end)
-Aim:Toggle("Visible Check (wall check)", A.VisCheck, function(v) A.VisCheck = v end)
-Aim:Toggle("Alive Check", A.AliveCheck, function(v) A.AliveCheck = v end)
-Aim:Toggle("ForceField Check", A.FFCheck, function(v) A.FFCheck = v end)
-
-Aim:Section("Prediction")
-Aim:Toggle("Enable Prediction", A.Prediction, function(v) A.Prediction = v end)
-Aim:Dropdown("Prediction Mode", {"Auto (Ping)", "Manual"}, A.PredMode, function(v) A.PredMode = v end)
-local pingLabel = Aim:Label("Current ping: -- ms  |  auto amount: --")
-Aim:Slider("Manual Amount", 0, 0.5, A.PredAmount, 3, "", function(v) A.PredAmount = v end)
-Aim:Slider("Auto Ping Multiplier", 0, 3, A.PingMult, 2, "x", function(v) A.PingMult = v end)
-Aim:Slider("Vertical (Y) Scale", 0, 1.5, A.YScale, 2, "x", function(v) A.YScale = v end)
-Aim:Slider("Random Offset", 0, 3, A.RandomOffset, 2, " studs", function(v) A.RandomOffset = v end)
-
-Aim:Section("Redirect Methods")
-Aim:Toggle("Workspace:Raycast", A.HookRaycast, function(v) A.HookRaycast = v end)
-Aim:Toggle("FindPartOnRay (legacy)", A.HookFindPart, function(v) A.HookFindPart = v end)
-Aim:Toggle("Mouse.Hit / Mouse.Target", A.HookMouse, function(v) A.HookMouse = v end)
-Aim:Toggle("Camera:ScreenPointToRay", A.HookScreenRay, function(v) A.HookScreenRay = v end)
-
-Aim:Section("Indicators")
-Aim:Toggle("Show FOV Circle", A.ShowFOV, function(v) A.ShowFOV = v end)
-Aim:Toggle("Fill FOV Circle", A.FOVFilled, function(v) A.FOVFilled = v end)
-Aim:ColorPicker("FOV / Indicator Color", A.FOVColor, function(c) A.FOVColor = c end)
-Aim:Toggle("Target Line", A.ShowLine, function(v) A.ShowLine = v end)
-Aim:Toggle("Target Dot", A.ShowDot, function(v) A.ShowDot = v end)
+local E, W, C, H = Cfg.ESP, Cfg.World, Cfg.Cam, Cfg.Hitbox
 
 --// Camlock
 local PartList = {"Head", "Torso", "HumanoidRootPart", "Closest Part", "Random"}
@@ -996,10 +825,9 @@ CamTab:Toggle("Enable Camlock", C.Enabled, function(v) C.Enabled = v; if not v t
 local camStatus = CamTab:Label("Status: Idle  |  key: none (set it in Settings)")
 
 CamTab:Section("Targeting")
+CamTab:Label("Locks onto the closest player to your camera (no FOV circle).")
 CamTab:Dropdown("Aim Part", PartList, C.Part, function(v) C.Part = v end)
-CamTab:Dropdown("Target Priority", {"Closest to Cursor", "Closest Distance", "Lowest Health"}, C.Priority, function(v) C.Priority = v end)
 CamTab:Toggle("Stay Locked On Target", C.Sticky, function(v) C.Sticky = v end)
-CamTab:Slider("Lock-On FOV", 10, 800, C.FOV, 0, "px", function(v) C.FOV = v end)
 CamTab:Slider("Max Distance", 50, 5000, C.MaxDistance, 0, " studs", function(v) C.MaxDistance = v end)
 
 CamTab:Section("Smoothing")
@@ -1019,8 +847,7 @@ CamTab:Toggle("Alive Check", C.AliveCheck, function(v) C.AliveCheck = v end)
 CamTab:Toggle("ForceField Check", C.FFCheck, function(v) C.FFCheck = v end)
 
 CamTab:Section("Indicators")
-CamTab:Toggle("Show Lock-On Circle", C.ShowFOV, function(v) C.ShowFOV = v end)
-CamTab:ColorPicker("Circle / Indicator Color", C.FOVColor, function(c) C.FOVColor = c end)
+CamTab:ColorPicker("Indicator Color", C.DotColor, function(c) C.DotColor = c end)
 CamTab:Toggle("Target Dot", C.ShowDot, function(v) C.ShowDot = v end)
 
 --// Hitbox Expander
@@ -1058,8 +885,8 @@ Vis:Slider("Text Size", 10, 22, E.TextSize, 0, "", function(v) E.TextSize = v en
 Vis:Section("ESP Colors")
 Vis:ColorPicker("ESP Color", E.Color, function(c) E.Color = c end)
 Vis:Toggle("Use Team Colors", E.TeamColors, function(v) E.TeamColors = v end)
-Vis:Toggle("Highlight Aim Target", E.HighlightTarget, function(v) E.HighlightTarget = v end)
-Vis:ColorPicker("Aim Target Color", E.TargetColor, function(c) E.TargetColor = c end)
+Vis:Toggle("Highlight Camlock Target", E.HighlightTarget, function(v) E.HighlightTarget = v end)
+Vis:ColorPicker("Camlock Target Color", E.TargetColor, function(c) E.TargetColor = c end)
 
 Vis:Section("Fog")
 Vis:Toggle("Enable Custom Fog", W.Fog, function(v) W.Fog = v end)
@@ -1111,7 +938,7 @@ local function Unload()
     pcall(function() RunService:UnbindFromRenderStep("PSA_Camlock") end)
     for plr in pairs(HB) do restoreHB(plr) end
     if hasDrawing then
-        for _, d in ipairs({FOVCircle, TargetLine, TargetDot, CamCircle, CamDot}) do pcall(function() d:Remove() end) end
+        for _, d in ipairs({CamDot}) do pcall(function() d:Remove() end) end
     end
     Cfg.World.Fog = false; Cfg.World.Fullbright = false; Cfg.World.TimeEnabled = false; Cfg.World.FOVEnabled = false
     pcall(updateWorld)
@@ -1128,11 +955,6 @@ env.PastelSA = {Unload = Unload}
 connect(UIS.InputBegan, function(i, gp)
     if gp or Binding then return end
     if i.KeyCode == Cfg.MenuKey then toggleMenu() end
-    local k = A.Key
-    if k and (i.KeyCode == k or i.UserInputType == k) then
-        if A.KeyMode == "Hold" then State.KeyDown = true
-        elseif A.KeyMode == "Toggle" then State.KeyDown = not State.KeyDown end
-    end
     local ck = C.Key
     if ck and C.Enabled and (i.KeyCode == ck or i.UserInputType == ck) then
         if C.KeyMode == "Hold" then CamState.Active = true
@@ -1141,8 +963,6 @@ connect(UIS.InputBegan, function(i, gp)
     end
 end)
 connect(UIS.InputEnded, function(i)
-    local k = A.Key
-    if k and A.KeyMode == "Hold" and (i.KeyCode == k or i.UserInputType == k) then State.KeyDown = false end
     local ck = C.Key
     if ck and C.KeyMode == "Hold" and (i.KeyCode == ck or i.UserInputType == ck) then
         CamState.Active = false; CamState.Target = nil
@@ -1159,18 +979,16 @@ connect(RunService.RenderStepped, function()
         State.Ping = ok and v / 1000 or State.Ping
         local names = {"Head", "UpperTorso", "LowerTorso", "HumanoidRootPart", "Torso"}
         State.RandName = names[math.random(1, #names)]
-        pingLabel.Set(string.format("Current ping: %d ms  |  auto amount: %.3f", State.Ping * 1000, State.Ping * A.PingMult))
         local st = "Idle"
         if C.Enabled and CamState.Active then
             st = CamState.Target and ("Locked on " .. CamState.Target.Name) or "Searching..."
         end
         camStatus.Set("Status: " .. st .. "  |  key: " .. (C.Key and C.Key.Name or "none") .. " (" .. C.KeyMode .. ")")
     end
-    updateTarget()
     updateAllESP()
     updateHitboxes()
     updateWorld()
 end)
 
-Notify(hooked and "Loaded - RightShift toggles the menu" or "Loaded, but hooks unavailable: silent aim won't work")
-if not hasDrawing then Notify("Drawing API missing: ESP/FOV circle disabled") end
+Notify("Loaded - RightShift toggles the menu")
+if not hasDrawing then Notify("Drawing API missing: ESP/indicators disabled") end
