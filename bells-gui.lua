@@ -46,7 +46,7 @@ local S = {
         Color = Color3.fromRGB(200, 225, 255),
     },
     World = { Fullbright = false, FOVEnabled = false, FOV = 90, TimeEnabled = false, Time = 14 },
-    UI = { MenuKey = Enum.KeyCode.RightShift },
+    UI = { MenuKey = Enum.KeyCode.RightControl },
 }
 
 ------------------------------------------------------------------ THEME (2 colors)
